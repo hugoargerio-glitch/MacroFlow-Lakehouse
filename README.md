@@ -228,7 +228,6 @@ pytest tests/ -v
 
 ### Developed by **Hugo Campos**
 
-### * LinkedIn: [linkedin.com/in/Hugo-Campos](https://www.linkedin.com/in/hugo-campos-b2a678273/)
-### * Portfolio / GitHub: [github.com/Hugo-Campos](https://github.com/hugoargerio-glitch?tab=repositories)
+### LinkedIn: [linkedin.com/in/Hugo-Campos](https://www.linkedin.com/in/hugo-campos-b2a678273/)
+### Portfolio / GitHub: [github.com/Hugo-Campos](https://github.com/hugoargerio-glitch?tab=repositories)
 
-`
