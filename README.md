@@ -174,6 +174,49 @@ CREATE TABLE IF NOT EXISTS MACROFLOW_DW.GOLD.FACT_MARKET_DAILY (
 
 ---
 
+## 🤖 Production MLOps & Time-Series Forecasting Engine
+
+Rather than treating Machine Learning as an isolated notebook experiment, MacroFlow operationalizes forecasting through a robust **MLOps lifecycle**. The Data Engineering pipeline automates the transformation of curated Gold tables into a point-in-time consistent **Feature Store**, executes distributed training, tracks experiment lineage via **MLflow**, and automates scheduled batch inference workflows orchestrated by **Apache Airflow**.
+
+```
+[ Databricks Gold Layer ]
+           │
+           ▼
+[ 1. Feature Store Engine ]   ──▶ Time-Lag Generation ($t-1 \dots t-30$), Rolling Volatility, Spreads
+           │
+           ▼
+[ 2. MLflow Tracking Hub  ]   ──▶ Hyperparameter Optimization, Artifact Logging & $RMSE$/$MAPE$ Telemetry
+           │
+           ▼
+[ 3. Production Registry  ]   ──▶ Semantic Versioning (Staging ➔ Production) based on Benchmark Gates
+           │
+           ▼
+[ 4. Airflow Inference DAG]   ──▶ Daily $D+1$ Batch Scoring Job execution via Databricks Submit Run Operator
+           │
+           ▼
+[ 5. Snowflake Sink Mart  ]   ──▶ Ingestion into FACT_MACRO_FORECASTS for Executive BI Consumption
+          
+```
+### 1. Feature Engineering & Feature Store
+The automated feature generation module transforms raw financial time series into a supervised learning matrix, enforcing **as-of temporal joins** to prevent data leakage (lookahead bias):
+* **Temporal Lags:** Autoregressive feature matrices capturing multi-interval momentum ($t-1, t-3, t-5, t-15, t-30$).
+* **Statistical Moments:** Rolling kurtosis, dynamic volatility windows (14-day RSI, Bollinger Band spreads), and moving average divergence.
+* **Macro Exogenous Drivers:** Real-time yield differential between SELIC policy shifts and US Dollar liquidity.
+
+### 2. Model Architecture & Experiment Tracking (MLflow)
+* **Forecasting Algorithm:** **LightGBM Regressor** customized for recursive time-series forecasting, selected for its superior handling of non-linear macroeconomic shifts, computational efficiency, and low memory footprint in distributed Spark environments.
+* **Experiment Lineage:** Every training execution automatically logs:
+  * **Parameters:** Learning rate, number of leaves, objective function, regularization hyperparameters ($L1/L2$).
+  * **Evaluation Metrics:** Out-of-time validation metrics ($RMSE$, $MAE$, $MAPE$, Directional Accuracy Ratio).
+  * **Artifacts:** Serialized model binaries (`.booster`), feature importance plots, and SHAP summary charts.
+
+### 3. Automated Batch Scoring Pipeline
+1. **Trigger:** The daily ingestion DAG completes Gold layer transformations and emits an Airflow execution trigger to the `macroflow_ml_inference_batch` DAG.
+2. **Model Loading:** The inference worker queries the MLflow Model Registry via URI (`models:/MacroFlow_USDBRL_Forecaster/Production`) to load the active champion model.
+3. **Inference Execution:** Generates multi-step ahead predictions ($t+1 \dots t+7$) with calculated prediction intervals ($95\%$ upper/lower confidence bounds).
+4. **Idempotent Loading:** Predictions and residual logs are written directly to Snowflake's `FACT_MACRO_FORECASTS` table using transactional merge operations.
+
+----
 
 ## 🏛️ Enterprise BI Serving Layer & Dimensional Modeling
 
@@ -231,50 +274,6 @@ To ensure optimal query performance, sub-second dashboard rendering, and governa
 * **MLOps Drift & Model Observability:** Performance telemetry dashboard monitoring prediction error drift ($MAE$, $RMSE$, $MAPE$) across batch training runs and tracking model version promotions.
 
 ---
-
-## 🤖 Production MLOps & Time-Series Forecasting Engine
-
-Rather than treating Machine Learning as an isolated notebook experiment, MacroFlow operationalizes forecasting through a robust **MLOps lifecycle**. The Data Engineering pipeline automates the transformation of curated Gold tables into a point-in-time consistent **Feature Store**, executes distributed training, tracks experiment lineage via **MLflow**, and automates scheduled batch inference workflows orchestrated by **Apache Airflow**.
-
-```
-[ Databricks Gold Layer ]
-           │
-           ▼
-[ 1. Feature Store Engine ]   ──▶ Time-Lag Generation ($t-1 \dots t-30$), Rolling Volatility, Spreads
-           │
-           ▼
-[ 2. MLflow Tracking Hub  ]   ──▶ Hyperparameter Optimization, Artifact Logging & $RMSE$/$MAPE$ Telemetry
-           │
-           ▼
-[ 3. Production Registry  ]   ──▶ Semantic Versioning (Staging ➔ Production) based on Benchmark Gates
-           │
-           ▼
-[ 4. Airflow Inference DAG]   ──▶ Daily $D+1$ Batch Scoring Job execution via Databricks Submit Run Operator
-           │
-           ▼
-[ 5. Snowflake Sink Mart  ]   ──▶ Ingestion into FACT_MACRO_FORECASTS for Executive BI Consumption
-          
-```
-### 1. Feature Engineering & Feature Store
-The automated feature generation module transforms raw financial time series into a supervised learning matrix, enforcing **as-of temporal joins** to prevent data leakage (lookahead bias):
-* **Temporal Lags:** Autoregressive feature matrices capturing multi-interval momentum ($t-1, t-3, t-5, t-15, t-30$).
-* **Statistical Moments:** Rolling kurtosis, dynamic volatility windows (14-day RSI, Bollinger Band spreads), and moving average divergence.
-* **Macro Exogenous Drivers:** Real-time yield differential between SELIC policy shifts and US Dollar liquidity.
-
-### 2. Model Architecture & Experiment Tracking (MLflow)
-* **Forecasting Algorithm:** **LightGBM Regressor** customized for recursive time-series forecasting, selected for its superior handling of non-linear macroeconomic shifts, computational efficiency, and low memory footprint in distributed Spark environments.
-* **Experiment Lineage:** Every training execution automatically logs:
-  * **Parameters:** Learning rate, number of leaves, objective function, regularization hyperparameters ($L1/L2$).
-  * **Evaluation Metrics:** Out-of-time validation metrics ($RMSE$, $MAE$, $MAPE$, Directional Accuracy Ratio).
-  * **Artifacts:** Serialized model binaries (`.booster`), feature importance plots, and SHAP summary charts.
-
-### 3. Automated Batch Scoring Pipeline
-1. **Trigger:** The daily ingestion DAG completes Gold layer transformations and emits an Airflow execution trigger to the `macroflow_ml_inference_batch` DAG.
-2. **Model Loading:** The inference worker queries the MLflow Model Registry via URI (`models:/MacroFlow_USDBRL_Forecaster/Production`) to load the active champion model.
-3. **Inference Execution:** Generates multi-step ahead predictions ($t+1 \dots t+7$) with calculated prediction intervals ($95\%$ upper/lower confidence bounds).
-4. **Idempotent Loading:** Predictions and residual logs are written directly to Snowflake's `FACT_MACRO_FORECASTS` table using transactional merge operations.
-
-----
 
  
 ## 📂 Repository Structure
