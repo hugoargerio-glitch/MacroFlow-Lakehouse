@@ -22,17 +22,10 @@ The platform integrates public APIs from the **Central Bank of Brazil (BCB/SGS)*
 | :--- | :--- | :--- | :--- |
 | **01. Ingestion & Edge Contracts** | Multi-source extraction (BCB + YFinance), dynamic sliding window, Pydantic schema validation & Hive-partitioned raw JSON sink. | Apache Airflow, Python 3.11, Pydantic | `DONE` ✅ |
 | **02. Warehouse Provisioning** | DDL setup for analytical marts, auto-suspending virtual warehouses & RBAC security setup. | Snowflake SQL | `DONE` ✅ |
-<<<<<<< HEAD
-| **03. Silver Layer (Lakehouse)** | Strict schema casting, business deduplication, trading calendar forward-fill & idempotent Delta `MERGE INTO`. | Databricks, PySpark, Delta Lake | `DONE` ✅  |
-| **04. Gold Layer (Feature Store & Marts)** | Rolling volatility (30/60/90d), SMA/EMA indicators, time-lagged feature matrices & macro spread analytics. | Databricks, PySpark SQL, Delta Lake | `IN PROGRESS` 🟡 |
-| **05. Serving Layer (Kimball Marts)** | Pipeline sync from Databricks to Snowflake dimensional star-schema (`FACT_MARKET_DAILY`, `DIM_CALENDAR`, `DIM_ASSET`). | Snowflake Spark Connector, DBFS | `PLANNED` ⚪ |
-| **06. MLOps Batch Inference Engine** | Automated feature retrieval, MLflow experiment tracking/registry, LightGBM multi-horizon FX forecasting & prediction sinking. | MLflow, LightGBM, Apache Airflow | `PLANNED` ⚪ |
-=======
 | **03. Silver Layer (Lakehouse)** | Strict schema casting, business deduplication, trading calendar forward-fill & idempotent Delta `MERGE INTO`. | Databricks, PySpark, Delta Lake | `DONE` ✅ |
 | **04. Gold Layer (Feature Store & Marts)** | Rolling volatility (30/60/90d), SMA/EMA indicators, time-lagged feature matrices & macro spread analytics. | Databricks, PySpark SQL, Delta Lake | `DONE` ✅ |
 | **05. Serving Layer (Kimball Marts)** | Pipeline sync from Databricks to Snowflake dimensional star-schema (`FACT_MARKET_DAILY`, `DIM_CALENDAR`, `DIM_ASSET`). | Snowflake Spark Connector, DBFS | `DONE` ✅ |
 | **06. MLOps Batch Inference Engine** | Automated feature retrieval, MLflow experiment tracking/registry, LightGBM multi-horizon FX forecasting & prediction sinking. | MLflow, LightGBM, Apache Airflow | `DONE` ✅ |
->>>>>>> f299bdb (feat(pipeline): implement silver/gold lakehouse layers, mlops batch forecasting, snowflake marts and automated ci)
 | **07. Executive BI & Observability** | Macro risk dashboards (Power BI / Streamlit), data drift detection, SLA monitoring & CI/CD workflow testing. | Power BI, GitHub Actions, Pytest | `PLANNED` ⚪ |
 
 ---
