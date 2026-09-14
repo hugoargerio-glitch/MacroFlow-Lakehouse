@@ -313,8 +313,10 @@ To ensure optimal query performance, sub-second dashboard rendering, and governa
 ├── tests/
 │   ├── test_contracts.py              # Schema validation unit tests
 │   └── test_transforms.py             # PySpark transformation logic unit tests
+├── Dockerfile                         # Custom Airflow container image definition
 ├── docker-compose.yaml                # Local Apache Airflow deployment configuration
 ├── requirements.txt                   # Python dependencies
+├── ruff.toml                          # Static analysis and linting configuration
 └── README.md
 ```
 
