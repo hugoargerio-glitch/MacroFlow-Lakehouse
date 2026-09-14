@@ -1,26 +1,25 @@
-from datetime import date, datetime
+from datetime import date
 from typing import Optional
 from pydantic import BaseModel, Field, field_validator
 
 
 class BCBRecord(BaseModel):
-    """Contrato de validação para os dados das séries do Banco Central (SGS)."""
-    data: str = Field(description="Data da observação no formato DD/MM/YYYY")
-    valor: float = Field(description="Valor numérico do indicador")
+    reference_date: date
+    ticker_or_code: str
+    close_price: float = Field(..., gt=-100.0, description="Taxa ou índice macroeconômico")
 
-    @field_validator("valor", mode="before")
-    def parse_float(cls, v):
-        if v is None or v == "":
-            raise ValueError("Valor não pode ser nulo ou vazio")
+    @field_validator("close_price")
+    def validate_positive(cls, v: float) -> float:
+        if v is None:
+            raise ValueError("O valor de fechamento não pode ser nulo.")
         return float(v)
 
 
-class MarketAssetRecord(BaseModel):
-    """Contrato de validação para ativos financeiros do Yahoo Finance."""
-    reference_date: date = Field(description="Data de fechamento do mercado")
-    ticker: str = Field(description="Código do ativo (ex: USDBRL=X, ^BVSP)")
+class MarketRecord(BaseModel):
+    reference_date: date
+    ticker: str
     open_price: Optional[float] = None
     high_price: Optional[float] = None
     low_price: Optional[float] = None
-    close_price: float = Field(description="Preço de fechamento ajustado")
+    close_price: float = Field(..., gt=0.0, description="Preço de fechamento estritamente positivo")
     volume: Optional[float] = 0.0

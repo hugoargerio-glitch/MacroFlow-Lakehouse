@@ -22,10 +22,17 @@ The platform integrates public APIs from the **Central Bank of Brazil (BCB/SGS)*
 | :--- | :--- | :--- | :--- |
 | **01. Ingestion & Edge Contracts** | Multi-source extraction (BCB + YFinance), dynamic sliding window, Pydantic schema validation & Hive-partitioned raw JSON sink. | Apache Airflow, Python 3.11, Pydantic | `DONE` ✅ |
 | **02. Warehouse Provisioning** | DDL setup for analytical marts, auto-suspending virtual warehouses & RBAC security setup. | Snowflake SQL | `DONE` ✅ |
+<<<<<<< HEAD
 | **03. Silver Layer (Lakehouse)** | Strict schema casting, business deduplication, trading calendar forward-fill & idempotent Delta `MERGE INTO`. | Databricks, PySpark, Delta Lake | `DONE` ✅  |
 | **04. Gold Layer (Feature Store & Marts)** | Rolling volatility (30/60/90d), SMA/EMA indicators, time-lagged feature matrices & macro spread analytics. | Databricks, PySpark SQL, Delta Lake | `IN PROGRESS` 🟡 |
 | **05. Serving Layer (Kimball Marts)** | Pipeline sync from Databricks to Snowflake dimensional star-schema (`FACT_MARKET_DAILY`, `DIM_CALENDAR`, `DIM_ASSET`). | Snowflake Spark Connector, DBFS | `PLANNED` ⚪ |
 | **06. MLOps Batch Inference Engine** | Automated feature retrieval, MLflow experiment tracking/registry, LightGBM multi-horizon FX forecasting & prediction sinking. | MLflow, LightGBM, Apache Airflow | `PLANNED` ⚪ |
+=======
+| **03. Silver Layer (Lakehouse)** | Strict schema casting, business deduplication, trading calendar forward-fill & idempotent Delta `MERGE INTO`. | Databricks, PySpark, Delta Lake | `DONE` ✅ |
+| **04. Gold Layer (Feature Store & Marts)** | Rolling volatility (30/60/90d), SMA/EMA indicators, time-lagged feature matrices & macro spread analytics. | Databricks, PySpark SQL, Delta Lake | `DONE` ✅ |
+| **05. Serving Layer (Kimball Marts)** | Pipeline sync from Databricks to Snowflake dimensional star-schema (`FACT_MARKET_DAILY`, `DIM_CALENDAR`, `DIM_ASSET`). | Snowflake Spark Connector, DBFS | `DONE` ✅ |
+| **06. MLOps Batch Inference Engine** | Automated feature retrieval, MLflow experiment tracking/registry, LightGBM multi-horizon FX forecasting & prediction sinking. | MLflow, LightGBM, Apache Airflow | `DONE` ✅ |
+>>>>>>> f299bdb (feat(pipeline): implement silver/gold lakehouse layers, mlops batch forecasting, snowflake marts and automated ci)
 | **07. Executive BI & Observability** | Macro risk dashboards (Power BI / Streamlit), data drift detection, SLA monitoring & CI/CD workflow testing. | Power BI, GitHub Actions, Pytest | `PLANNED` ⚪ |
 
 ---
@@ -286,10 +293,7 @@ To ensure optimal query performance, sub-second dashboard rendering, and governa
 │       └── ci.yml                     # Automated linting (Ruff), type checking, and Pytest
 ├── airflow/
 │   ├── dags/
-│   │   ├── contracts/
-│   │   │   └── macro_models.py        # Pydantic models for data validation
 │   │   ├── macroflow_ingestion_bronze.py
-│   │   ├── macroflow_lakehouse_transform.py
 │   │   └── macroflow_ml_inference_batch.py # Automated D+1 batch forecasting DAG
 │   └── plugins/
 ├── bi/
@@ -305,16 +309,16 @@ To ensure optimal query performance, sub-second dashboard rendering, and governa
 │       └── 03_batch_predict.py        # Batch scoring engine loading production model artifact
 ├── snowflake/
 │   ├── 01_ddl_setup.sql               # Database, schema, warehouse and RBAC DDL
-│   ├── 02_dimensional_marts.sql       # Kimball Star Schema (Dimensions & Facts)
-│   └── 03_analytics_views.sql         # Optimized views for reporting and feature serving
+│   └── 02_dimensional_marts.sql       # Kimball Star Schema (Dimensions & Facts)
 ├── src/
 │   ├── __init__.py
 │   ├── extractors/                    # API wrapper classes (BCB, Yahoo Finance)
 │   ├── ml_utils/                      # Backtesting, evaluation metrics (RMSE/MAPE), MLflow helpers
 │   └── schemas/                       # Pydantic data models enforcing data contracts
+│       ├── __init__.py
+│       └── macro_models.py
 ├── tests/
 │   ├── test_contracts.py              # Schema validation unit tests
-│   ├── test_ml_features.py            # Feature engineering transformation tests
 │   └── test_transforms.py             # PySpark transformation logic unit tests
 ├── docker-compose.yaml                # Local Apache Airflow deployment configuration
 ├── requirements.txt                   # Python dependencies

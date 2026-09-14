@@ -1,1 +1,0 @@
--- Materialized views for macroeconomic KPIs
