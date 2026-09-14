@@ -1,0 +1,18 @@
+# Ruff configuration for MacroFlow-Lakehouse
+target-version = "py311"
+line-length = 120
+
+[lint]
+select = ["E", "F", "W", "I"]
+ignore = [
+    "E501",  # Line length is enforced by ruff format
+]
+
+[lint.per-file-ignores]
+# Databricks notebooks and scripts inject dbutils and spark as runtime globals
+"databricks/*" = ["F821"]
+
+[format]
+quote-style = "double"
+indent-style = "space"
+line-ending = "auto"

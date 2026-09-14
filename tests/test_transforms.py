@@ -1,8 +1,9 @@
-import pytest
 import math
 from datetime import date, timedelta
-from pyspark.sql import SparkSession, Window
+
 import pyspark.sql.functions as F
+import pytest
+from pyspark.sql import SparkSession, Window
 
 
 @pytest.fixture(scope="session")
@@ -23,18 +24,17 @@ def test_daily_return_and_zero_division_guard(spark):
     """Verifica se o retorno diário respeita a fórmula e ignora bases <= 0."""
     data = [
         ("USDBRL=X", date(2026, 1, 1), 5.0),
-        ("USDBRL=X", date(2026, 1, 2), 5.5),   # Retorno esperado: +10% (0.10)
-        ("USDBRL=X", date(2026, 1, 3), 0.0),   # Fechamento anômalo
-        ("USDBRL=X", date(2026, 1, 4), 5.5),   # Base anterior = 0, deve resultar em NULL
+        ("USDBRL=X", date(2026, 1, 2), 5.5),  # Retorno esperado: +10% (0.10)
+        ("USDBRL=X", date(2026, 1, 3), 0.0),  # Fechamento anômalo
+        ("USDBRL=X", date(2026, 1, 4), 5.5),  # Base anterior = 0, deve resultar em NULL
     ]
     df = spark.createDataFrame(data, ["ticker", "reference_date", "close_price"])
 
     w_lag = Window.partitionBy("ticker").orderBy("reference_date")
     df_calc = (
-        df.withColumn("prev_close", F.lag("close_price", 1).over(w_lag))
-        .withColumn(
+        df.withColumn("prev_close", F.lag("close_price", 1).over(w_lag)).withColumn(
             "daily_return",
-            F.when(F.col("prev_close") > 0, (F.col("close_price") - F.col("prev_close")) / F.col("prev_close"))
+            F.when(F.col("prev_close") > 0, (F.col("close_price") - F.col("prev_close")) / F.col("prev_close")),
         )
     ).collect()
 
@@ -52,10 +52,7 @@ def test_cold_start_sma_and_volatility(spark):
     """Garante que janelas com menos observações que o tamanho exigido retornem NULL."""
     # Cria uma série temporal com 35 dias consecutivos
     start_dt = date(2026, 1, 1)
-    data = [
-        ("USDBRL=X", start_dt + timedelta(days=i), 5.0 + (i * 0.05))
-        for i in range(35)
-    ]
+    data = [("USDBRL=X", start_dt + timedelta(days=i), 5.0 + (i * 0.05)) for i in range(35)]
     df = spark.createDataFrame(data, ["ticker", "reference_date", "close_price"])
 
     w_lag = Window.partitionBy("ticker").orderBy("reference_date")
@@ -66,15 +63,12 @@ def test_cold_start_sma_and_volatility(spark):
         df.withColumn("prev_close", F.lag("close_price", 1).over(w_lag))
         .withColumn(
             "daily_return",
-            F.when(F.col("prev_close") > 0, (F.col("close_price") - F.col("prev_close")) / F.col("prev_close"))
+            F.when(F.col("prev_close") > 0, (F.col("close_price") - F.col("prev_close")) / F.col("prev_close")),
         )
         .withColumn("count_7d", F.count("close_price").over(w_7d))
         .withColumn("count_vol_30d", F.count("daily_return").over(w_vol_30d))
         .withColumn("sma_7", F.when(F.col("count_7d") == 7, F.avg("close_price").over(w_7d)))
-        .withColumn(
-            "rolling_vol_30d",
-            F.when(F.col("count_vol_30d") >= 30, F.stddev("daily_return").over(w_vol_30d))
-        )
+        .withColumn("rolling_vol_30d", F.when(F.col("count_vol_30d") >= 30, F.stddev("daily_return").over(w_vol_30d)))
     ).collect()
 
     # 1. Validação de Cold Start da SMA-7

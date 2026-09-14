@@ -1,6 +1,8 @@
-from datetime import datetime, timedelta
-from airflow import DAG
+from datetime import datetime, timedelta, timezone
+
 from airflow.providers.databricks.operators.databricks import DatabricksSubmitRunOperator
+
+from airflow import DAG
 
 default_args = {
     "owner": "macroflow-mlops",
@@ -12,12 +14,11 @@ default_args = {
 with DAG(
     dag_id="macroflow_ml_inference_batch",
     default_args=default_args,
-    start_date=datetime(2024, 1, 1),
+    start_date=datetime(2024, 1, 1, tzinfo=timezone.utc),
     schedule_interval=None,  # Disparada via Trigger pela DAG de Lakehouse
     catchup=False,
-    tags=["mlops", "lightgbm", "forecasting", "snowflake", "batch"]
+    tags=["mlops", "lightgbm", "forecasting", "snowflake", "batch"],
 ) as dag:
-
     run_batch_scoring = DatabricksSubmitRunOperator(
         task_id="execute_lgbm_batch_scoring",
         databricks_conn_id="databricks_default",
@@ -25,13 +26,9 @@ with DAG(
             "spark_version": "13.3.x-scala2.12",
             "node_type_id": "i3.xlarge",
             "num_workers": 1,
-            "spark_env_vars": {
-                "MLFLOW_TRACKING_URI": "databricks"
-            }
+            "spark_env_vars": {"MLFLOW_TRACKING_URI": "databricks"},
         },
-        spark_python_task={
-            "python_file": "dbfs:/FileStore/scripts/ml/03_batch_predict.py"
-        }
+        spark_python_task={"python_file": "dbfs:/FileStore/scripts/ml/03_batch_predict.py"},
     )
 
     run_batch_scoring
