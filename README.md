@@ -26,7 +26,7 @@ The platform integrates public APIs from the **Central Bank of Brazil (BCB/SGS)*
 | **04. Gold Layer (Feature Store & Marts)** | Rolling volatility (30/60/90d), SMA/EMA indicators, time-lagged feature matrices & macro spread analytics. | Databricks, PySpark SQL, Delta Lake | `DONE` ✅ |
 | **05. Serving Layer (Kimball Marts)** | Pipeline sync from Databricks to Snowflake dimensional star-schema (`FACT_MARKET_DAILY`, `DIM_CALENDAR`, `DIM_ASSET`). | Snowflake Spark Connector, DBFS | `DONE` ✅ |
 | **06. MLOps Batch Inference Engine** | Automated feature retrieval, MLflow experiment tracking/registry, LightGBM multi-horizon FX forecasting & prediction sinking. | MLflow, LightGBM, Apache Airflow | `DONE` ✅ |
-| **07. Executive BI & Observability** | Macro risk dashboards (Power BI / Streamlit), data drift detection, SLA monitoring & CI/CD workflow testing. | Power BI, GitHub Actions, Pytest | `PLANNED` ⚪ |
+
 
 ---
 
