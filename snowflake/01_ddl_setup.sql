@@ -1,44 +1,57 @@
--- 1. Garante privilégio administrativo
-USE ROLE ACCOUNTADMIN;
+-- ====================================================================
+-- MacroFlow Lakehouse - Snowflake Infrastructure & RBAC Provisioning
+-- Authoritative DDL: Compute, Database, Schema, and Security Roles
+-- ====================================================================
 
--- 2. Cria o Warehouse (Computação com auto-suspend para poupar créditos)
+-- 1. Provisionamento de Recursos de Infraestrutura e Computacao (SYSADMIN)
+USE ROLE SYSADMIN;
+
+-- Criacao do Warehouse com auto-suspend de 60s para otimizacao de creditos
 CREATE WAREHOUSE IF NOT EXISTS COMPUTE_WH
     WITH 
     WAREHOUSE_SIZE = 'XSMALL'
     AUTO_SUSPEND = 60
     AUTO_RESUME = TRUE
     INITIALLY_SUSPENDED = TRUE
-    COMMENT = 'Warehouse analitico do MacroFlow';
+    COMMENT = 'Warehouse analitico padrao para a plataforma MacroFlow Lakehouse';
 
--- 3. Cria o Banco de Dados e define o contexto
-CREATE DATABASE IF NOT EXISTS MACROFLOW_DW;
-USE DATABASE MACROFLOW_DW;
+-- Criacao do Banco de Dados Analitico Central
+CREATE DATABASE IF NOT EXISTS MACROFLOW_DW
+    COMMENT = 'Data Warehouse analitico central da plataforma MacroFlow';
 
--- 4. Cria o Esquema Gold e define o contexto
-CREATE SCHEMA IF NOT EXISTS GOLD;
-USE SCHEMA GOLD;
+-- Criacao do Esquema GOLD (Camada de Servico e Dimensional Marts)
+CREATE SCHEMA IF NOT EXISTS MACROFLOW_DW.GOLD
+    COMMENT = 'Camada de consumo analitico estruturada no modelo dimensional Kimball';
 
--- 5. Criação da Tabela de Cotações Diárias e Indicadores
-CREATE TABLE IF NOT EXISTS FACT_MARKET_DAILY (
-    reference_date DATE NOT NULL,
-    ticker_or_code VARCHAR(30) NOT NULL,
-    asset_name VARCHAR(100),
-    close_price NUMBER(18, 4),
-    daily_return NUMBER(10, 6),
-    ingestion_timestamp TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP(),
-    PRIMARY KEY (reference_date, ticker_or_code)
-);
+-- 2. Criacao dos Papeis de Acesso de Minimo Privilegio (SECURITYADMIN)
+USE ROLE SECURITYADMIN;
 
--- 6. Criação da Tabela de Métricas e Volatilidade
-CREATE TABLE IF NOT EXISTS AGG_MACRO_VOLATILITY (
-    reference_date DATE NOT NULL,
-    asset_name VARCHAR(50) NOT NULL,
-    volatility_30d NUMBER(10, 6),
-    volatility_60d NUMBER(10, 6),
-    volatility_90d NUMBER(10, 6),
-    sma_7 NUMBER(18, 4),
-    sma_30 NUMBER(18, 4),
-    sma_200 NUMBER(18, 4),
-    updated_at TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP(),
-    PRIMARY KEY (reference_date, asset_name)
-);
+-- Papel de servico para os jobs de ingestao e sincronizacao Databricks -> Snowflake
+CREATE ROLE IF NOT EXISTS MACROFLOW_ETL_ROLE
+    COMMENT = 'Papel de servico para pipelines de carga, transformacao e sync do Lakehouse para o DW';
+
+-- Papel de consulta analitica para consumidores de BI, dashboards e cientistas de dados
+CREATE ROLE IF NOT EXISTS MACROFLOW_BI_READER
+    COMMENT = 'Papel restrito de somente leitura para analistas e ferramentas de BI';
+
+-- Estabelecimento da Hierarquia RBAC: concede papeis operacionais ao SYSADMIN para governanca
+GRANT ROLE MACROFLOW_ETL_ROLE TO ROLE SYSADMIN;
+GRANT ROLE MACROFLOW_BI_READER TO ROLE SYSADMIN;
+
+-- 3. Concessao de Privilegios Minimos (Least Privilege Grants)
+
+-- Privilegios para MACROFLOW_ETL_ROLE (Acesso de Escrita/Carga)
+GRANT USAGE ON WAREHOUSE COMPUTE_WH TO ROLE MACROFLOW_ETL_ROLE;
+GRANT USAGE ON DATABASE MACROFLOW_DW TO ROLE MACROFLOW_ETL_ROLE;
+GRANT USAGE, CREATE TABLE, CREATE STAGE, CREATE VIEW, CREATE FILE FORMAT ON SCHEMA MACROFLOW_DW.GOLD TO ROLE MACROFLOW_ETL_ROLE;
+GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA MACROFLOW_DW.GOLD TO ROLE MACROFLOW_ETL_ROLE;
+GRANT ALL PRIVILEGES ON FUTURE TABLES IN SCHEMA MACROFLOW_DW.GOLD TO ROLE MACROFLOW_ETL_ROLE;
+
+-- Privilegios para MACROFLOW_BI_READER (Acesso Estritamente Read-Only)
+GRANT USAGE ON WAREHOUSE COMPUTE_WH TO ROLE MACROFLOW_BI_READER;
+GRANT USAGE ON DATABASE MACROFLOW_DW TO ROLE MACROFLOW_BI_READER;
+GRANT USAGE ON SCHEMA MACROFLOW_DW.GOLD TO ROLE MACROFLOW_BI_READER;
+GRANT SELECT ON ALL TABLES IN SCHEMA MACROFLOW_DW.GOLD TO ROLE MACROFLOW_BI_READER;
+GRANT SELECT ON ALL VIEWS IN SCHEMA MACROFLOW_DW.GOLD TO ROLE MACROFLOW_BI_READER;
+GRANT SELECT ON FUTURE TABLES IN SCHEMA MACROFLOW_DW.GOLD TO ROLE MACROFLOW_BI_READER;
+GRANT SELECT ON FUTURE VIEWS IN SCHEMA MACROFLOW_DW.GOLD TO ROLE MACROFLOW_BI_READER;

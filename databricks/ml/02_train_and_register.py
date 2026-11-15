@@ -1,115 +1,149 @@
-import lightgbm as lgb
+"""Databricks Direct Multi-Horizon LightGBM training, walk-forward CV, and MLflow Alias registration."""
+
+from __future__ import annotations
+
+import logging
+import sys
+from pathlib import Path
+from typing import Any, Mapping, Optional
+
 import mlflow
-import mlflow.lightgbm
-import numpy as np
+import mlflow.pyfunc
 import pandas as pd
+from mlflow.exceptions import MlflowException
+from mlflow.models import infer_signature
 from mlflow.tracking import MlflowClient
 from pyspark.sql import SparkSession
-from sklearn.metrics import mean_absolute_error, mean_absolute_percentage_error, mean_squared_error
+from pyspark.sql import functions as F
 
-spark = SparkSession.builder.appName("MacroFlow-Model-Training").getOrCreate()
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
 
-# 1. Carregamento da Feature Store
-df_spark = spark.read.table("macroflow_gold.feature_store_fx")
-df_data = df_spark.filter(df_spark.target_close_d1.isNotNull()).toPandas()
+from src.ml_utils.features import FEATURE_COLUMNS, TARGET_COLUMNS  # noqa: E402
+from src.ml_utils.training import (  # noqa: E402
+    DEFAULT_LGBM_PARAMS,
+    MODEL_REGISTRY_NAME,
+    evaluate_direct_bundle,
+    make_train_val_test_split,
+    run_walk_forward_cv,
+    should_promote_challenger,
+)
 
-# Ordenação temporal mandatória
-df_data["reference_date"] = pd.to_datetime(df_data["reference_date"])
-df_data = df_data.sort_values("reference_date").reset_index(drop=True)
+logger = logging.getLogger("MacroFlow-Model-Training")
+logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
-# 2. Definição da Matriz de Features e Target
-feature_cols = [
-    "rsi_14",
-    "bb_spread_20",
-    "ma_divergence_7_30",
-    "rolling_vol_30d",
-    "rolling_vol_60d",
-    "rolling_vol_90d",
-    "real_interest_rate",
-    "ibov_daily_return",
-    "btc_daily_return",
-    "lag_close_1",
-    "lag_return_1",
-    "lag_vol_30d_1",
-    "lag_close_3",
-    "lag_return_3",
-    "lag_vol_30d_3",
-    "lag_close_5",
-    "lag_return_5",
-    "lag_vol_30d_5",
-    "lag_close_15",
-    "lag_return_15",
-    "lag_vol_30d_15",
-    "lag_close_30",
-    "lag_return_30",
-    "lag_vol_30d_30",
-]
-target_col = "target_close_d1"
-
-X = df_data[feature_cols].astype(float)
-y = df_data[target_col].astype(float)
-
-# 3. Split Temporal Out-of-Time (Últimos 60 dias de pregão para teste)
-test_size = 60
-X_train, X_test = X.iloc[:-test_size], X.iloc[-test_size:]
-y_train, y_test = y.iloc[:-test_size], y.iloc[-test_size:]
-
-# 4. Pipeline de Treinamento com MLflow Tracking
+FEATURE_TABLE_NAME = "macroflow_gold.feature_store_fx"
 EXPERIMENT_NAME = "/Shared/macroflow_usdbrl_forecaster"
-mlflow.set_experiment(EXPERIMENT_NAME)
 
-with mlflow.start_run(run_name="lgbm_recursive_fx_run") as run:
-    params = {
-        "objective": "regression",
-        "metric": "rmse",
-        "n_estimators": 400,
-        "learning_rate": 0.03,
-        "max_depth": 5,
-        "num_leaves": 31,
-        "subsample": 0.8,
-        "colsample_bytree": 0.8,
-        "random_state": 42,
-    }
-    mlflow.log_params(params)
 
-    # Treinamento
-    model = lgb.LGBMRegressor(**params)
-    model.fit(
-        X_train, y_train, eval_set=[(X_test, y_test)], callbacks=[lgb.early_stopping(stopping_rounds=30, verbose=False)]
-    )
+def _fetch_champion_metrics(client: MlflowClient, model_name: str) -> Optional[Mapping[str, float]]:
+    """Retrieve logged metrics from the current ``@champion`` alias, or None if unset."""
+    try:
+        champion_mv = client.get_model_version_by_alias(model_name, "champion")
+        champion_run = client.get_run(champion_mv.run_id)
+        return dict(champion_run.data.metrics)
+    except MlflowException:
+        return None
 
-    # Avaliação de Desempenho
-    y_pred = model.predict(X_test)
-    rmse = np.sqrt(mean_squared_error(y_test, y_pred))
-    mae = mean_absolute_error(y_test, y_pred)
-    mape = mean_absolute_percentage_error(y_test, y_pred)
 
-    # Directional Accuracy Ratio (Acerto de direção de subida/descida)
-    actual_diff = np.sign(y_test.values - X_test["lag_close_1"].values)
-    pred_diff = np.sign(y_pred - X_test["lag_close_1"].values)
-    directional_accuracy = (actual_diff == pred_diff).mean()
+def run_training_pipeline(spark_session: SparkSession) -> dict[str, Any]:
+    """Train direct h=1..7 models, run walk-forward CV, log to MLflow, and gate @champion promotion."""
+    logger.info("Loading Feature Store table: %s", FEATURE_TABLE_NAME)
+    df_spark = spark_session.read.table(FEATURE_TABLE_NAME).filter(F.col("ticker") == "USDBRL=X")
 
-    # Log de Métricas e Telemetria
-    mlflow.log_metric("rmse", float(rmse))
-    mlflow.log_metric("mae", float(mae))
-    mlflow.log_metric("mape", float(mape))
-    mlflow.log_metric("directional_accuracy", float(directional_accuracy))
+    # Keep only rows where all multi-horizon stationary log-return targets are available
+    for target_col in TARGET_COLUMNS:
+        df_spark = df_spark.filter(F.col(target_col).isNotNull())
 
-    # Log do Modelo
-    model_info = mlflow.lightgbm.log_model(
-        lgb_model=model, artifact_path="model", registered_model_name="MacroFlow_USDBRL_Forecaster"
-    )
+    df_data = df_spark.toPandas()
+    df_data["reference_date"] = pd.to_datetime(df_data["reference_date"])
+    df_data = df_data.sort_values("reference_date").reset_index(drop=True)
 
-    # 5. Critério de Benchmark para Promoção para Produção
+    # Strict 3-way temporal split: train -> val (early stopping & CQR calibration) -> untouched test
+    split = make_train_val_test_split(n_samples=len(df_data), val_size=30, test_size=60, min_train_size=120)
+
+    mlflow.set_experiment(EXPERIMENT_NAME)
     client = MlflowClient()
-    latest_version = client.get_latest_versions("MacroFlow_USDBRL_Forecaster", stages=["None"])[0].version
 
-    # Limiar: MAPE abaixo de 2% para câmbio curto prazo
-    if mape < 0.02:
-        client.set_registered_model_alias("MacroFlow_USDBRL_Forecaster", "champion", latest_version)
-        client.transition_model_version_stage(
-            name="MacroFlow_USDBRL_Forecaster",
-            version=latest_version,
-            stage="Production",
-            archive_existing_versions=True,
+    with mlflow.start_run(run_name="lgbm_direct_multihorizon_fx") as run:
+        mlflow.log_params(
+            {
+                **DEFAULT_LGBM_PARAMS,
+                "forecast_strategy": "direct_multi_horizon",
+                "target_type": "log_return",
+                "horizons": "1..7",
+                "val_size": 30,
+                "test_size": 60,
+                "n_features": len(FEATURE_COLUMNS),
+                "n_samples": len(df_data),
+            }
         )
+
+        # 1. Walk-forward expanding-window CV across historical regimes
+        cv_metrics = run_walk_forward_cv(
+            df_data=df_data,
+            n_splits=4,
+            val_size=20,
+            test_size=20,
+            min_train_size=120,
+            feature_columns=FEATURE_COLUMNS,
+        )
+        mlflow.log_metrics(cv_metrics)
+
+        # 2. Final Direct Multi-Horizon Bundle (train/val -> holdout test)
+        bundle, holdout_metrics = evaluate_direct_bundle(
+            df_data=df_data,
+            split=split,
+            feature_columns=FEATURE_COLUMNS,
+        )
+        mlflow.log_metrics(holdout_metrics)
+
+        # 3. Log MLflow PyFunc bundle with explicit signature and input_example
+        input_example = df_data.loc[:, list(FEATURE_COLUMNS)].iloc[:5].astype(float)
+        output_example = bundle.predict(None, input_example)
+        signature = infer_signature(input_example, output_example)
+
+        src_path = _REPO_ROOT / "src"
+        model_info = mlflow.pyfunc.log_model(
+            artifact_path="model",
+            python_model=bundle,
+            signature=signature,
+            input_example=input_example,
+            code_paths=[str(src_path)] if src_path.exists() else None,
+            registered_model_name=MODEL_REGISTRY_NAME,
+        )
+
+        new_version = str(model_info.registered_model_version)
+        client.set_registered_model_alias(MODEL_REGISTRY_NAME, "challenger", new_version)
+        mlflow.set_tag("challenger_version", new_version)
+
+        # 4. Champion-vs-Challenger & Naive Baseline Quality Gate
+        champion_metrics = _fetch_champion_metrics(client, MODEL_REGISTRY_NAME)
+        promote, reason = should_promote_challenger(
+            challenger_metrics=holdout_metrics,
+            champion_metrics=champion_metrics,
+            metric_key="mean_rmse",
+            naive_key="mean_naive_rmse",
+        )
+        mlflow.set_tag("promotion_decision", str(promote))
+        mlflow.set_tag("promotion_reason", reason)
+        logger.info("Promotion evaluation for v%s: promote=%s (%s)", new_version, promote, reason)
+
+        if promote:
+            client.set_registered_model_alias(MODEL_REGISTRY_NAME, "champion", new_version)
+            logger.info("Promoted %s v%s to @champion alias.", MODEL_REGISTRY_NAME, new_version)
+
+        return {
+            "run_id": run.info.run_id,
+            "version": new_version,
+            "promoted": promote,
+            "reason": reason,
+            "holdout_metrics": holdout_metrics,
+            "cv_metrics": cv_metrics,
+        }
+
+
+if __name__ == "__main__":
+    spark_session = SparkSession.builder.appName("MacroFlow-Model-Training").getOrCreate()
+    run_training_pipeline(spark_session)

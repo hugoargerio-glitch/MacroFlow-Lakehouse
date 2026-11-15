@@ -1,118 +1,123 @@
-import hashlib
-from datetime import timedelta
+"""Databricks batch inference pipeline loading @champion direct FX models and merging to Snowflake."""
 
-import mlflow.lightgbm
-import numpy as np
+from __future__ import annotations
+
+import logging
+import os
+import sys
+from datetime import date, datetime
+from pathlib import Path
+from typing import Optional
+
+import mlflow.pyfunc
 import pandas as pd
-import pyspark.sql.functions as F
+from mlflow.tracking import MlflowClient
 from pyspark.sql import SparkSession
+from pyspark.sql import functions as F
 
-spark = SparkSession.builder.appName("MacroFlow-Batch-Inference").getOrCreate()
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
 
-# 1. Carregamento do Campeão do MLflow Registry
-model_name = "MacroFlow_USDBRL_Forecaster"
-model_uri = f"models:/{model_name}/Production"
-model = mlflow.lightgbm.load_model(model_uri)
+from src.ml_utils.features import FEATURE_COLUMNS  # noqa: E402
+from src.ml_utils.inference import (  # noqa: E402
+    USDBRL_ASSET_ID,
+    build_forecast_records,
+    build_snowflake_options,
+    generate_forecast_merge_sql,
+    get_forecast_spark_schema,
+    validate_feature_freshness,
+)
+from src.ml_utils.training import MODEL_REGISTRY_NAME  # noqa: E402
 
-client = mlflow.tracking.MlflowClient()
-prod_version = client.get_latest_versions(model_name, stages=["Production"])[0].version
+logger = logging.getLogger("MacroFlow-Batch-Inference")
+logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
-# 2. Obtenção do Ponto Temporal Mais Recente (t0) da Feature Store
-df_spark = spark.read.table("macroflow_gold.feature_store_fx")
-df_latest = df_spark.sort(F.col("reference_date").desc()).limit(1).toPandas()
+FEATURE_TABLE_NAME = "macroflow_gold.feature_store_fx"
+TARGET_DW_TABLE = "MACROFLOW_DW.GOLD.FACT_MACRO_FORECASTS"
+STAGING_DW_TABLE = "MACROFLOW_DW.GOLD.STG_FACT_MACRO_FORECASTS"
 
-if df_latest.empty:
-    raise ValueError("A Feature Store está vazia. Não é possível gerar inferência.")
 
-ref_date = pd.to_datetime(df_latest["reference_date"].values[0]).date()
-current_price = float(df_latest["close_price"].values[0])
+def _resolve_as_of_date(cli_arg: Optional[str] = None) -> date:
+    if cli_arg:
+        return datetime.strptime(cli_arg.strip()[:10], "%Y-%m-%d").date()
+    return date.today()
 
-feature_cols = [
-    "rsi_14",
-    "bb_spread_20",
-    "ma_divergence_7_30",
-    "rolling_vol_30d",
-    "rolling_vol_60d",
-    "rolling_vol_90d",
-    "real_interest_rate",
-    "ibov_daily_return",
-    "btc_daily_return",
-    "lag_close_1",
-    "lag_return_1",
-    "lag_vol_30d_1",
-    "lag_close_3",
-    "lag_return_3",
-    "lag_vol_30d_3",
-    "lag_close_5",
-    "lag_return_5",
-    "lag_vol_30d_5",
-    "lag_close_15",
-    "lag_return_15",
-    "lag_vol_30d_15",
-    "lag_close_30",
-    "lag_return_30",
-    "lag_vol_30d_30",
-]
 
-# Desvio padrão dos resíduos para intervalo de confiança de 95% (~1.96 * sigma)
-residual_std = 0.0350  # Estimador empírico calibrado no backtesting
+def run_batch_inference(spark_session: SparkSession, as_of_date: Optional[date] = None) -> int:
+    """Score t+1..t+7 B3 trading days via @champion model and merge idempotently into Snowflake."""
+    eval_date = as_of_date or date.today()
+    max_staleness = int(os.environ.get("MACROFLOW_MAX_FEATURE_STALENESS_DAYS", "5"))
 
-# 3. Projeção Multi-Step Recursiva (t+1 até t+7)
-forecast_records = []
-current_features = df_latest[feature_cols].copy().astype(float)
-simulated_price = current_price
+    # 1. Atomic resolution of @champion model version via MLflow Aliases
+    client = MlflowClient()
+    champion_mv = client.get_model_version_by_alias(MODEL_REGISTRY_NAME, "champion")
+    champion_version = str(champion_mv.version)
+    model_uri = f"models:/{MODEL_REGISTRY_NAME}/{champion_version}"
+    logger.info("Loading @champion model URI: %s", model_uri)
+    model = mlflow.pyfunc.load_model(model_uri)
 
-for step in range(1, 8):
-    target_date = ref_date + timedelta(days=step)
+    # 2. Fetch latest USDBRL=X Feature Store observation and enforce freshness
+    df_latest = (
+        spark_session.read.table(FEATURE_TABLE_NAME)
+        .filter(F.col("ticker") == "USDBRL=X")
+        .sort(F.col("reference_date").desc())
+        .limit(1)
+        .toPandas()
+    )
+    if df_latest.empty:
+        raise ValueError("Feature Store is empty for USDBRL=X; cannot run batch inference.")
 
-    # Predição para o horizonte step
-    pred = float(model.predict(current_features)[0])
+    ref_date = pd.to_datetime(df_latest["reference_date"].iloc[0]).date()
+    validate_feature_freshness(reference_date=ref_date, as_of_date=eval_date, max_staleness_days=max_staleness)
 
-    # Margem de incerteza acumulativa: sigma * sqrt(step)
-    uncertainty = 1.96 * residual_std * np.sqrt(step)
-    lower_bound = round(pred - uncertainty, 4)
-    upper_bound = round(pred + uncertainty, 4)
+    current_price = float(df_latest["close_price"].iloc[0])
+    x_latest = df_latest.loc[:, list(FEATURE_COLUMNS)].astype(float)
+    if x_latest.isna().any().any():
+        nan_cols = x_latest.columns[x_latest.isna().iloc[0]].tolist()
+        raise ValueError(f"Latest Feature Store row ({ref_date}) contains NaNs in columns: {nan_cols}")
 
-    # Geração de Chave Primária Hash MD5
-    hash_key = f"{ref_date}_{target_date}_1_{prod_version}"
-    forecast_id = hashlib.md5(hash_key.encode("utf-8")).hexdigest()
-
-    forecast_records.append(
-        {
-            "FORECAST_ID": forecast_id,
-            "REFERENCE_DATE": str(ref_date),
-            "TARGET_HORIZON_DATE": str(target_date),
-            "ASSET_ID": 1,  # 1 = USDBRL=X na DIM_ASSET
-            "HORIZON_DAYS": step,
-            "PREDICTED_VALUE": round(pred, 4),
-            "LOWER_BOUND_95": lower_bound,
-            "UPPER_BOUND_95": upper_bound,
-            "MODEL_VERSION": f"LightGBM_v{prod_version}",
-        }
+    # 3. Direct multi-horizon log-return prediction (h=1..7) & B3 trading-day mapping
+    predictions_df = model.predict(x_latest)
+    model_version_tag = f"LightGBM_Direct_v{champion_version}"
+    forecast_records = build_forecast_records(
+        reference_date=ref_date,
+        current_price=current_price,
+        predictions_df=predictions_df,
+        model_version=model_version_tag,
+        asset_id=USDBRL_ASSET_ID,
     )
 
-    # Atualização autoregressiva para o próximo passo recursivo
-    current_features["lag_close_1"] = pred
-    current_features["lag_return_1"] = (pred - simulated_price) / simulated_price
-    simulated_price = pred
+    # 4. Idempotent staged MERGE into Snowflake FACT_MACRO_FORECASTS
+    forecast_schema = get_forecast_spark_schema()
+    df_forecast_spark = spark_session.createDataFrame(forecast_records, schema=forecast_schema)
 
-# 4. Gravação Idempotente no Snowflake (FACT_MACRO_FORECASTS)
-df_forecast_spark = spark.createDataFrame(pd.DataFrame(forecast_records))
+    dbutils_obj = globals().get("dbutils")
+    snowflake_options = build_snowflake_options(dbutils_obj=dbutils_obj)
+    merge_sql = generate_forecast_merge_sql(target_table=TARGET_DW_TABLE, staging_table=STAGING_DW_TABLE)
 
-snowflake_options = {
-    "sfURL": "https://<your_account_identifier>.snowflakecomputing.com",
-    "sfUser": dbutils.secrets.get(scope="macroflow_scope", key="SNOWFLAKE_USER"),  # noqa: F821
-    "sfPassword": dbutils.secrets.get(scope="macroflow_scope", key="SNOWFLAKE_PASSWORD"),  # noqa: F821
-    "sfDatabase": "MACROFLOW_DW",
-    "sfSchema": "GOLD",
-    "sfWarehouse": "COMPUTE_WH",
-}
+    (
+        df_forecast_spark.write.format("snowflake")
+        .options(**snowflake_options)
+        .option("dbtable", STAGING_DW_TABLE)
+        .option("column_mapping", "name")
+        .option("usestagingtable", "ON")
+        .option("postactions", merge_sql)
+        .mode("overwrite")
+        .save()
+    )
 
-(
-    df_forecast_spark.write.format("snowflake")
-    .options(**snowflake_options)
-    .option("dbtable", "FACT_MACRO_FORECASTS")
-    .option("usestagingtable", "ON")
-    .mode("append")
-    .save()
-)
+    logger.info(
+        "Merged %d forecast horizons for reference_date=%s (version=%s) into %s.",
+        len(forecast_records),
+        ref_date,
+        model_version_tag,
+        TARGET_DW_TABLE,
+    )
+    return len(forecast_records)
+
+
+if __name__ == "__main__":
+    spark_session = SparkSession.builder.appName("MacroFlow-Batch-Inference").getOrCreate()
+    cli_date = _resolve_as_of_date(sys.argv[1] if len(sys.argv) > 1 else None)
+    run_batch_inference(spark_session, as_of_date=cli_date)

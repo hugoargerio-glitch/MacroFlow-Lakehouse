@@ -1,16 +1,14 @@
 # Ruff configuration for MacroFlow-Lakehouse
 target-version = "py311"
 line-length = 120
+# Databricks runtime globals (spark, dbutils) are explicitly declared rather than disabling F821
+builtins = ["dbutils", "spark"]
 
 [lint]
 select = ["E", "F", "W", "I"]
 ignore = [
     "E501",  # Line length is enforced by ruff format
 ]
-
-[lint.per-file-ignores]
-# Databricks notebooks and scripts inject dbutils and spark as runtime globals
-"databricks/*" = ["F821"]
 
 [format]
 quote-style = "double"
