@@ -15,6 +15,7 @@ from pyspark.sql.utils import AnalysisException
 
 from src.extractors.airflow_helpers import get_databricks_raw_base_path
 from src.schemas.macro_models import get_bcb_spark_schema, get_market_spark_schema
+from src.transforms._delta import create_clustered_delta_table, ensure_schema_exists
 
 logger = logging.getLogger(__name__)
 
@@ -153,32 +154,6 @@ def deduplicate_against_existing_files(
     return df_bronze.join(df_existing_files.select("source_file").distinct(), on="source_file", how="left_anti")
 
 
-def _ensure_schema_exists(spark: SparkSession, table_name: str) -> None:
-    if "." in table_name:
-        schema_name = table_name.rsplit(".", 1)[0]
-        spark.sql(f"CREATE SCHEMA IF NOT EXISTS {schema_name}")
-
-
-def _create_clustered_delta_table(
-    spark: SparkSession,
-    df_bronze: DataFrame,
-    table_name: str,
-    cluster_cols: tuple[str, ...],
-) -> None:
-    _ensure_schema_exists(spark, table_name)
-    try:
-        (
-            df_bronze.writeTo(table_name)
-            .using("delta")
-            .option("mergeSchema", "true")
-            .clusterBy(*cluster_cols)
-            .createOrReplace()
-        )
-    except Exception:  # noqa: BLE001
-        logger.info("Falling back to unpartitioned Delta table creation for %s.", table_name)
-        df_bronze.write.format("delta").mode("overwrite").saveAsTable(table_name)
-
-
 def write_bronze_delta(
     spark: SparkSession,
     df_bronze: DataFrame,
@@ -190,7 +165,14 @@ def write_bronze_delta(
     coerced = coerce_target_date(target_date)
 
     if not spark.catalog.tableExists(table_name):
-        _create_clustered_delta_table(spark, df_bronze, table_name, ("source_partition_date",))
+        create_clustered_delta_table(
+            spark,
+            df_bronze,
+            table_name,
+            ("source_partition_date",),
+            logger=logger,
+            merge_schema=True,
+        )
         return
 
     if coerced is not None:
@@ -228,7 +210,7 @@ def run_bronze_autoloader(
         or os.environ.get("DATABRICKS_BRONZE_CHECKPOINT_PATH", "/Volumes/macroflow/bronze/_checkpoints")
     ).rstrip("/")
     checkpoint_location = f"{ckpt_root}/{source}"
-    _ensure_schema_exists(spark, table_name)
+    ensure_schema_exists(spark, table_name)
 
     df_stream = (
         spark.readStream.format("cloudFiles")

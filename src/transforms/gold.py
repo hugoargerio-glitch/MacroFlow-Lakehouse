@@ -12,6 +12,7 @@ from delta.tables import DeltaTable
 from pyspark.sql import DataFrame, SparkSession, Window
 from pyspark.sql.types import DateType, DecimalType, StringType, TimestampType
 
+from src.transforms._delta import create_clustered_delta_table
 from src.transforms.silver import DEFAULT_SILVER_TABLE
 
 logger = logging.getLogger(__name__)
@@ -323,12 +324,6 @@ def build_gold_fact_market_daily(
     )
 
 
-def _ensure_schema_exists(spark: SparkSession, table_name: str) -> None:
-    if "." in table_name:
-        schema_name = table_name.rsplit(".", 1)[0]
-        spark.sql(f"CREATE SCHEMA IF NOT EXISTS {schema_name}")
-
-
 def merge_gold_fact_market_daily(
     spark: SparkSession,
     df_gold: DataFrame,
@@ -338,16 +333,14 @@ def merge_gold_fact_market_daily(
 ) -> None:
     """Persist Gold analytical rows via Liquid Clustering and a change-guarded Delta MERGE."""
     if not spark.catalog.tableExists(target_table):
-        _ensure_schema_exists(spark, target_table)
-        try:
-            (df_gold.writeTo(target_table).using("delta").clusterBy("ticker", "reference_date").createOrReplace())
-        except Exception:  # noqa: BLE001
-            logger.info("Falling back to unpartitioned Delta creation + ZORDER for %s.", target_table)
-            df_gold.write.format("delta").mode("overwrite").saveAsTable(target_table)
-            try:
-                spark.sql(f"OPTIMIZE {target_table} ZORDER BY (ticker, reference_date)")
-            except Exception:  # noqa: BLE001
-                pass
+        create_clustered_delta_table(
+            spark,
+            df_gold,
+            target_table,
+            ("ticker", "reference_date"),
+            logger=logger,
+            zorder_fallback=True,
+        )
         return
 
     df_to_merge = df_gold
